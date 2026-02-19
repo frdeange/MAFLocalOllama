@@ -1,0 +1,44 @@
+# ──────────────────────────────────────────────────────────────
+# Docker Compose - Travel Planner Infrastructure
+# ──────────────────────────────────────────────────────────────
+# Services:
+#   - mcp-server:  FastMCP travel tools (Streamable HTTP, port 8090)
+#   - jaeger:      Distributed tracing UI + OTLP collector
+#
+# Usage:
+#   docker compose up -d          # Start services
+#   docker compose down           # Stop services
+#   docker compose logs -f        # Follow logs
+#
+# Then run the orchestration locally:
+#   python main.py "Plan a trip to Paris"
+# ──────────────────────────────────────────────────────────────
+
+services:
+  # ── MCP Server ──────────────────────────────────────────────
+  mcp-server:
+    build:
+      context: ./mcp_server
+      dockerfile: Dockerfile
+    container_name: travel-mcp-server
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/mcp')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ── Jaeger (All-in-One) ────────────────────────────────────
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: travel-jaeger
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    restart: unless-stopped
