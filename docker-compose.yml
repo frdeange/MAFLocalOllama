@@ -44,7 +44,7 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -63,7 +63,7 @@ services:
       - OLLAMA_HOST=0.0.0.0
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD", "ollama", "list"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -81,8 +81,8 @@ services:
         condition: service_healthy
         required: false
     environment:
-      - OLLAMA_HOST=http://travel-ollama:11434
-      - OLLAMA_MODEL_ID=${OLLAMA_MODEL_ID:-phi4-mini}
+      - OLLAMA_HOST=travel-ollama:11434
+      - OLLAMA_MODEL_ID=${OLLAMA_MODEL_ID:-qwen2.5:3b}
     volumes:
       - ./scripts/init-ollama.sh:/init-ollama.sh:ro
     entrypoint: ["/bin/bash", "/init-ollama.sh"]
@@ -152,7 +152,7 @@ services:
       - "8000:8000"
     environment:
       - OLLAMA_HOST=http://travel-ollama:11434
-      - OLLAMA_MODEL_ID=${OLLAMA_MODEL_ID:-phi4-mini}
+      - OLLAMA_MODEL_ID=${OLLAMA_MODEL_ID:-qwen2.5:3b}
       - MCP_SERVER_URL=http://mcp-server:8090/mcp
       - DATABASE_URL=postgresql+asyncpg://travel:travel@postgres:5432/travelplanner
       - CORS_ORIGINS=http://localhost:3000

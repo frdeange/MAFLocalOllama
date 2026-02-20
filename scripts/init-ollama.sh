@@ -13,7 +13,7 @@
 set -e
 
 OLLAMA_HOST="${OLLAMA_HOST:-http://ollama:11434}"
-OLLAMA_MODEL_ID="${OLLAMA_MODEL_ID:-phi4-mini}"
+OLLAMA_MODEL_ID="${OLLAMA_MODEL_ID:-qwen2.5:3b}"
 
 echo "══════════════════════════════════════════════════════════"
 echo "  Ollama Model Initialization"
@@ -25,10 +25,10 @@ echo "════════════════════════�
 echo "⏳ Waiting for Ollama server at ${OLLAMA_HOST}..."
 
 MAX_RETRIES=60
-RETRY_INTERVAL=2
+RETRY_INTERVAL=5
 RETRIES=0
 
-until curl -sf "${OLLAMA_HOST}/api/tags" > /dev/null 2>&1; do
+until ollama list > /dev/null 2>&1; do
     RETRIES=$((RETRIES + 1))
     if [ "$RETRIES" -ge "$MAX_RETRIES" ]; then
         echo "✘ Ollama server not ready after $((MAX_RETRIES * RETRY_INTERVAL))s — aborting"
@@ -41,7 +41,7 @@ done
 echo "✓ Ollama server is ready"
 
 # ── Check if model is already available ───────────────────────
-if curl -sf "${OLLAMA_HOST}/api/tags" | grep -q "\"${OLLAMA_MODEL_ID}\""; then
+if ollama list | grep -q "${OLLAMA_MODEL_ID}"; then
     echo "✓ Model '${OLLAMA_MODEL_ID}' is already available — skipping pull"
     exit 0
 fi
