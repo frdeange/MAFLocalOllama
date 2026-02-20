@@ -40,7 +40,7 @@ async def create_conversation(
     conversation = Conversation(title=body.title)
     db.add(conversation)
     await db.flush()
-    await db.refresh(conversation)
+    await db.refresh(conversation, attribute_names=["messages"])
     logger.info("Created conversation: %s", conversation.id)
     return conversation
 
