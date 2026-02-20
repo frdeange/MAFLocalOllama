@@ -4,11 +4,12 @@ Telemetry Pattern Tests
 Validates that the project follows the required telemetry patterns
 to ensure reliable OpenTelemetry data export.
 
-These tests catch the three most common telemetry setup mistakes:
+These tests catch the most common telemetry setup mistakes:
 1. Missing load_dotenv() before MAF imports in main.py
 2. Missing shutdown_telemetry() call before process exit
 3. Missing OTLP exporter package in requirements
 4. Correct Aspire Dashboard configuration in docker-compose
+5. MCP server auto-instrumentation and OTLP export config
 """
 
 import ast
@@ -199,3 +200,86 @@ class TestEnvConfiguration:
         """Must set a service name for telemetry identification."""
         content = self._read_env_example()
         assert "OTEL_SERVICE_NAME" in content
+
+
+class TestMcpServerTelemetryConfig:
+    """Ensure the MCP server container is instrumented with OpenTelemetry.
+
+    Why: FastMCP has native OTel API instrumentation, but without the SDK and
+    exporter installed + the opentelemetry-instrument CLI wrapper, all spans
+    are no-ops. The MCP server must also export to Aspire Dashboard via the
+    Docker internal network (not localhost).
+    """
+
+    def _read_mcp_requirements(self) -> str:
+        path = os.path.join(BASE_DIR, "mcp_server", "requirements.txt")
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def _read_mcp_dockerfile(self) -> str:
+        path = os.path.join(BASE_DIR, "mcp_server", "Dockerfile")
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    def _read_compose(self) -> str:
+        path = os.path.join(BASE_DIR, "docker-compose.yml")
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    # ── MCP requirements.txt ──────────────────────────────────
+
+    def test_otel_distro_in_mcp_requirements(self) -> None:
+        """MCP server must include opentelemetry-distro for auto-instrumentation."""
+        content = self._read_mcp_requirements()
+        assert "opentelemetry-distro" in content, (
+            "mcp_server/requirements.txt must include opentelemetry-distro"
+        )
+
+    def test_otel_exporter_in_mcp_requirements(self) -> None:
+        """MCP server must include opentelemetry-exporter-otlp for export."""
+        content = self._read_mcp_requirements()
+        assert "opentelemetry-exporter-otlp" in content, (
+            "mcp_server/requirements.txt must include opentelemetry-exporter-otlp"
+        )
+
+    # ── MCP Dockerfile ────────────────────────────────────────
+
+    def test_dockerfile_runs_bootstrap(self) -> None:
+        """Dockerfile must run opentelemetry-bootstrap to install instrumentations."""
+        content = self._read_mcp_dockerfile()
+        assert "opentelemetry-bootstrap" in content, (
+            "Dockerfile must run 'opentelemetry-bootstrap -a install' "
+            "to auto-detect and install instrumentations (Starlette, uvicorn)"
+        )
+
+    def test_dockerfile_uses_otel_instrument_cmd(self) -> None:
+        """Dockerfile CMD must use opentelemetry-instrument wrapper."""
+        content = self._read_mcp_dockerfile()
+        assert "opentelemetry-instrument" in content, (
+            "Dockerfile CMD must use 'opentelemetry-instrument' to enable "
+            "auto-instrumentation at runtime"
+        )
+
+    # ── docker-compose.yml MCP service OTEL config ────────────
+
+    def test_mcp_service_has_otel_service_name(self) -> None:
+        """MCP server must have OTEL_SERVICE_NAME set in docker-compose."""
+        content = self._read_compose()
+        assert "OTEL_SERVICE_NAME=travel-mcp-tools" in content, (
+            "docker-compose.yml must set OTEL_SERVICE_NAME for the MCP server"
+        )
+
+    def test_mcp_service_has_otel_endpoint(self) -> None:
+        """MCP server must export to Aspire via Docker internal network."""
+        content = self._read_compose()
+        assert "aspire-dashboard:18889" in content, (
+            "MCP server's OTEL_EXPORTER_OTLP_ENDPOINT must point to "
+            "aspire-dashboard:18889 (Docker internal network)"
+        )
+
+    def test_mcp_service_depends_on_aspire(self) -> None:
+        """MCP server must depend on aspire-dashboard to ensure start order."""
+        content = self._read_compose()
+        assert "depends_on" in content, (
+            "MCP server should depend on aspire-dashboard in docker-compose"
+        )

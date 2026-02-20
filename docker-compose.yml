@@ -23,9 +23,16 @@ services:
     container_name: travel-mcp-server
     ports:
       - "8090:8090"
+    environment:
+      - OTEL_SERVICE_NAME=travel-mcp-tools
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://aspire-dashboard:18889
+      - OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+      - OTEL_PYTHON_EXCLUDED_URLS=health
+    depends_on:
+      - aspire-dashboard
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/mcp')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health')"]
       interval: 10s
       timeout: 5s
       retries: 3

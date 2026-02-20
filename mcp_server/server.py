@@ -137,6 +137,18 @@ def search_restaurants(
 
 
 # ──────────────────────────────────────────────────────────────
+# Health Check (excluded from OTel traces via OTEL_PYTHON_EXCLUDED_URLS)
+# ──────────────────────────────────────────────────────────────
+
+@mcp.custom_route("/health", methods=["GET"], name="health_check", include_in_schema=False)
+async def health_check(request):
+    """Lightweight health endpoint for Docker healthcheck — no MCP overhead."""
+    from starlette.responses import JSONResponse
+
+    return JSONResponse({"status": "healthy", "service": "travel-mcp-tools"})
+
+
+# ──────────────────────────────────────────────────────────────
 # Entry Point
 # ──────────────────────────────────────────────────────────────
 

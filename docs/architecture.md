@@ -37,9 +37,15 @@ This project implements a **multi-agent orchestration** proof-of-concept using t
 │  ┌──────────────────────────┐  ┌─────────────────────────┐  │
 │  │   Docker: MCP Server     │  │   Docker: Aspire        │  │
 │  │   FastMCP (port 8090)    │  │   UI (port 18888)       │  │
+│  │   + OTel auto-instrument │──│→ OTLP gRPC (port 18889) │  │
 │  │   Streamable HTTP        │  │   OTLP gRPC (port 4317) │  │
 │  └──────────────────────────┘  └─────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
+
+> Both the Python process (host → port 4317) and the MCP server container
+> (Docker network → aspire-dashboard:18889) export telemetry to the same
+> Aspire Dashboard instance, enabling **distributed tracing** across the
+> entire system.
 ```
 
 ### Key Decisions
@@ -71,9 +77,14 @@ All agents are created via `FoundryLocalClient.as_agent()` and wired into a
 - **Technology**: FastMCP 3.0, Python 3.13
 - **Transport**: Streamable HTTP on port 8090 (`/mcp` endpoint)
 - **Tools**: `get_weather`, `get_current_time`, `search_restaurants`
+- **Telemetry**: Auto-instrumented via `opentelemetry-instrument` (service: `travel-mcp-tools`)
 - **No authentication** (PoC scope)
 
 The Weather Analyst agent connects to the MCP server using MAF's `MCPStreamableHTTPTool`.
+FastMCP's native OpenTelemetry instrumentation automatically creates spans for each
+`tools/call` operation, following [MCP semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/).
+The MCP server exports telemetry to Aspire Dashboard via the Docker internal network
+(`aspire-dashboard:18889`).
 
 #### 3. Observability (Docker Container)
 
@@ -81,10 +92,17 @@ The Weather Analyst agent connects to the MCP server using MAF's `MCPStreamableH
 - **OTLP gRPC**: Host port 4317 → container port 18889
 - **OTLP HTTP**: Host port 4318 → container port 18890
 - **UI**: Port 18888
+- **Services reporting**: `travel-planner-orchestration` (Python process) + `travel-mcp-tools` (MCP server)
 
 The Agent Framework's `configure_otel_providers()` automatically instruments all agent
 calls, model invocations, and tool executions. Custom business spans wrap the workflow
 and individual agent steps.
+
+The MCP server is independently instrumented using `opentelemetry-instrument` (auto-
+instrumentation CLI), which detects Starlette/uvicorn and creates server-side spans
+for every tool call. This enables **distributed tracing**: the orchestrator's HTTP
+client propagates W3C `traceparent` headers, and the MCP server's instrumented HTTP
+stack extracts them, linking MCP tool spans as children of the agent spans.
 
 > **Important**: See [Telemetry Guide](telemetry-guide.md) for setup requirements and
 > common pitfalls when working with OpenTelemetry in this project.

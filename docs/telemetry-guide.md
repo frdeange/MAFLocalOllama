@@ -18,17 +18,26 @@ timing, plus MCP tool-call counters.
 ## Architecture
 
 ```
-Python Process                          Docker
+Python Process (host)                   Docker Network
 ┌──────────────────────┐     gRPC     ┌──────────────────────┐
 │  MAF + OTel SDK      │ ──────────→  │  Aspire Dashboard    │
 │                      │   :4317      │  :18888 (UI)         │
 │  TracerProvider      │              │  :18889 (OTLP gRPC)  │
 │  MeterProvider       │              │  :18890 (OTLP HTTP)  │
 │  LoggerProvider      │              └──────────────────────┘
+└──────────────────────┘                        ▲
+                                                │ gRPC
+MCP Server Container                            │ (Docker internal)
+┌──────────────────────┐     gRPC               │
+│  FastMCP 3.0         │ ──────────→ aspire-dashboard:18889
+│  + OTel auto-instr.  │
+│  (travel-mcp-tools)  │
 └──────────────────────┘
 ```
 
-Host port 4317 is mapped to container port 18889 (Aspire's internal gRPC port).
+- **Host → Aspire**: Port 4317 mapped to container port 18889
+- **MCP → Aspire**: Docker internal network, container-to-container (`aspire-dashboard:18889`)
+- Both services appear independently in the Aspire Dashboard UI
 
 ## Setup Checklist
 
@@ -106,6 +115,14 @@ Then open [http://localhost:18888](http://localhost:18888) to view:
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Transport protocol |
 | `OTEL_SERVICE_NAME` | `travel-planner-orchestration` | Service name in telemetry data |
 
+The MCP server container uses its own set of OTEL variables (configured in `docker-compose.yml`):
+
+| Variable | Value | Purpose |
+|----------|-------|---------|
+| `OTEL_SERVICE_NAME` | `travel-mcp-tools` | MCP server service name |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://aspire-dashboard:18889` | Aspire via Docker internal network |
+| `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Transport protocol |
+
 > **Note**: Use `OTEL_EXPORTER_OTLP_ENDPOINT` (base endpoint) rather than
 > signal-specific variables like `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`. The base
 > endpoint applies to all three signals (traces, metrics, logs), which is what
@@ -146,6 +163,62 @@ record_mcp_tool_call("get_weather", "http://localhost:8090/mcp")
 
 Increments the `mcp.tool_calls` counter with `tool.name` and `mcp.server_url` labels.
 
+## MCP Server Telemetry
+
+The MCP server (FastMCP) runs in a Docker container with **auto-instrumentation**
+enabled. No code changes to `server.py` are needed — all tracing is handled by
+the `opentelemetry-instrument` CLI wrapper and FastMCP's native OTel API calls.
+
+### How It Works
+
+1. **`opentelemetry-distro`** + **`opentelemetry-exporter-otlp`** are installed in
+   the container (via `mcp_server/requirements.txt`)
+2. **`opentelemetry-bootstrap -a install`** runs at build time, auto-detecting
+   Starlette and uvicorn and installing their instrumentations
+3. The Dockerfile's `CMD` uses `opentelemetry-instrument python server.py` instead
+   of plain `python server.py`
+4. Environment variables in `docker-compose.yml` configure the exporter:
+   - `OTEL_SERVICE_NAME=travel-mcp-tools`
+   - `OTEL_EXPORTER_OTLP_ENDPOINT=http://aspire-dashboard:18889` (Docker internal network)
+   - `OTEL_EXPORTER_OTLP_PROTOCOL=grpc`
+
+### What Gets Traced
+
+FastMCP creates spans following [MCP semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/):
+
+| Span Name | Example |
+|-----------|---------|
+| `tools/call {name}` | `tools/call get_weather` |
+| `resources/read {uri}` | `resources/read config://db` |
+| `prompts/get {name}` | `prompts/get greeting` |
+
+Each span includes attributes like `rpc.system=mcp`, `rpc.service=TravelTools`,
+`fastmcp.component.type=tool`, and `fastmcp.component.key=tool:get_weather`.
+
+### Distributed Tracing
+
+When the orchestrator's WeatherAnalyst agent calls the MCP server over HTTP, the
+HTTP client propagates a W3C `traceparent` header. The MCP server's auto-instrumented
+Starlette stack extracts this context, so MCP tool spans appear as **children** of
+the orchestrator's agent spans in the Aspire Dashboard trace view.
+
+This gives end-to-end visibility: `workflow → agent → HTTP request → MCP tool execution`.
+
+### Adding Telemetry to New Services
+
+When adding new services to the project, follow this pattern:
+
+1. Add `opentelemetry-distro` and `opentelemetry-exporter-otlp` to the service's
+   `requirements.txt`
+2. Run `opentelemetry-bootstrap -a install` in the Dockerfile
+3. Use `opentelemetry-instrument` as the CMD entrypoint wrapper
+4. Set `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and
+   `OTEL_EXPORTER_OTLP_PROTOCOL` via docker-compose environment variables
+5. Point the endpoint to `http://aspire-dashboard:18889` (Docker internal network)
+
+This ensures every service in the ecosystem reports to the same Aspire Dashboard
+instance with consistent configuration.
+
 ## Troubleshooting
 
 | Symptom | Likely Cause | Fix |
@@ -155,6 +228,8 @@ Increments the `mcp.tool_calls` counter with `tool.name` and `mcp.server_url` la
 | Intermittent missing spans | Process exits before `BatchSpanProcessor` flushes | Call `shutdown_telemetry()` before exit |
 | Connection refused on port 4317 | Aspire Dashboard not running | `docker compose up -d` |
 | UNIMPLEMENTED errors for metrics/logs | Backend only supports traces (e.g., Jaeger) | Switch to Aspire Dashboard which supports all three signals |
+| MCP server spans not visible | MCP container can't reach Aspire | Check `OTEL_EXPORTER_OTLP_ENDPOINT` in docker-compose uses `aspire-dashboard:18889` (Docker network) |
+| MCP spans not linked to agent spans | Trace context not propagated | Ensure `opentelemetry-instrument` is used (auto-instruments HTTP server to extract `traceparent`) |
 
 ## Why Aspire Dashboard Instead of Jaeger?
 
