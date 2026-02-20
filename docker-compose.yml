@@ -25,8 +25,11 @@
 
 services:
   # ── Ollama (GPU mode) ──────────────────────────────────────
+  # Pinned to 0.15.6: Ollama 0.16.x has a 30-second GPU discovery timeout
+  # that is too short for WSL2 CUDA cold-start on some hardware.
+  # Version 0.15.6 detects the GPU in <1s. Revisit when 0.17+ is released.
   ollama-gpu:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.15.6
     container_name: travel-ollama
     profiles: ["gpu"]
     ports:
@@ -37,7 +40,6 @@ services:
       - OLLAMA_HOST=0.0.0.0
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - OLLAMA_LLM_LIBRARY=cuda_v12
     deploy:
       resources:
         reservations:
