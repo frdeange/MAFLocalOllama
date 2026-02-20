@@ -5,13 +5,20 @@ Runs the MAF SequentialBuilder pipeline and yields SSE events.
 Translates MAF streaming events into the SSE event protocol.
 
 Key design decisions:
+- Uses ``event.executor_id`` to identify agents (reliable; replaces the
+  fragile counter-based approach that broke with tool-calling rounds and
+  internal adapter executors like ``input-conversation`` / ``end``).
 - Buffers output per agent and emits ``agent_completed`` only once per agent
-  (with the longest/best output), because MAF may fire multiple executor
-  rounds for a single agent (e.g. tool-calling rounds in WeatherAnalyst).
-- Strips ``=== PREVIOUS CONVERSATION CONTEXT ===`` markers that agents
-  may echo back from the session context prefix.
-- Caps at the 3 known agents; extra executor events are attributed to the
-  last agent in the sequence.
+  (with the longest/best output).  Extra executor rounds for the same agent
+  (e.g. WeatherAnalyst tool-calling) are silently merged into its buffer.
+- Properly extracts text from MAF event.data which contains
+  ``AgentExecutorResponse`` and ``AgentResponse``/``AgentResponseUpdate``
+  objects — NOT plain ``Message`` objects.
+- Strips ``=== PREVIOUS CONVERSATION CONTEXT ===`` markers.
+- The final ``output`` event (from the SequentialBuilder's "end" executor)
+  carries ``list[Message]`` — the full conversation — from which we extract
+  the last assistant text.  If an agent (especially Planner) produced empty
+  output, the workflow final output is used as the Planner's content.
 """
 
 import json
@@ -26,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Agent names in execution order (must match SequentialBuilder participant order)
 AGENT_SEQUENCE = ["Researcher", "WeatherAnalyst", "Planner"]
+_AGENT_SET = frozenset(AGENT_SEQUENCE)
 
 # Regex to strip echoed conversation-context markers from agent output
 _CONTEXT_PREFIX_RE = re.compile(
@@ -39,15 +47,19 @@ def _sse_line(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def _extract_last_assistant_text(data) -> str:
-    """Safely extract the last assistant message text from event data.
+def _extract_text(data) -> str:
+    """Extract the best text from MAF event data.
 
-    MAF event.data can be:
-        - A list of Message objects (each with .role and .text)
-        - A list containing nested lists
-        - A single Message object
-        - A string
-        - None
+    MAF ``executor_completed`` event.data is a list of:
+        - ``AgentExecutorResponse`` (.agent_response.text → full response)
+        - ``AgentResponse`` (.text → full text, .messages → Message list)
+        - ``AgentResponseUpdate`` (.text → partial chunk)
+
+    The workflow ``output`` event.data is ``list[Message]``, where each
+    Message has ``.role`` and ``.text``.
+
+    Strategy: recurse into lists, try the richest accessor first
+    (AgentExecutorResponse > AgentResponse > Message), keep longest.
     """
     if data is None:
         return ""
@@ -55,36 +67,42 @@ def _extract_last_assistant_text(data) -> str:
     if isinstance(data, str):
         return data
 
-    # If it's a list, flatten and iterate
-    messages = data if isinstance(data, list) else [data]
+    # ── AgentExecutorResponse → .agent_response.text (full response) ──
+    agent_resp = getattr(data, "agent_response", None)
+    if agent_resp is not None:
+        text = getattr(agent_resp, "text", None)
+        if isinstance(text, str) and text.strip():
+            return text
 
-    # Flatten nested lists
-    flat = []
-    for item in messages:
-        if isinstance(item, list):
-            flat.extend(item)
-        else:
-            flat.append(item)
+    # ── AgentResponse / AgentResponseUpdate / Message → .text ──
+    text = getattr(data, "text", None)
+    if isinstance(text, str) and text.strip():
+        # For Message objects, only accept assistant role
+        role = getattr(data, "role", None)
+        if role is None or role == "assistant":
+            return text
 
-    # Try to extract assistant text from Message-like objects
-    for msg in reversed(flat):
-        try:
-            role = getattr(msg, "role", None)
-            text = getattr(msg, "text", None) or getattr(msg, "content", None)
-            if role == "assistant" and text:
-                return str(text)
-        except Exception:
-            continue
+    # ── list / tuple → recurse, keep longest ──
+    if isinstance(data, (list, tuple)):
+        best = ""
+        for item in data:
+            t = _extract_text(item)
+            if len(t) > len(best):
+                best = t
+        return best
 
-    # Last resort: stringify the last item
-    if flat:
-        last = flat[-1]
-        if isinstance(last, str):
-            return last
-        text = getattr(last, "text", None) or getattr(last, "content", None)
-        if text:
-            return str(text)
+    return ""
 
+
+def _extract_last_assistant(messages) -> str:
+    """Extract last assistant message text from a list[Message] conversation."""
+    if not isinstance(messages, (list, tuple)):
+        return _extract_text(messages)
+    for msg in reversed(messages):
+        role = getattr(msg, "role", None)
+        text = getattr(msg, "text", None)
+        if role == "assistant" and isinstance(text, str) and text.strip():
+            return text
     return ""
 
 
@@ -105,6 +123,14 @@ def _clean_output(text: str) -> str:
     return text
 
 
+def _agent_step(name: str) -> int:
+    """Return the 1-based step number for an agent name."""
+    try:
+        return AGENT_SEQUENCE.index(name) + 1
+    except ValueError:
+        return len(AGENT_SEQUENCE)
+
+
 async def run_workflow_sse(
     client: object,
     mcp_server_url: str,
@@ -115,10 +141,11 @@ async def run_workflow_sse(
     This is the core bridge between MAF's SequentialBuilder streaming events
     and the SSE protocol consumed by the frontend.
 
-    The function buffers MAF executor events and maps them to exactly 3 logical
-    agent steps.  Each agent gets one ``agent_started`` and one
-    ``agent_completed`` SSE event.  Extra executor rounds (tool-calling, etc.)
-    are silently merged into the current agent's buffer.
+    The function uses ``event.executor_id`` to identify which agent each
+    MAF event belongs to, buffers output per agent, and emits exactly one
+    ``agent_started`` + one ``agent_completed`` SSE event per logical agent.
+    Extra executor rounds (tool-calling, internal adapters) are silently
+    handled.
 
     Args:
         client: OllamaChatClient instance.
@@ -141,121 +168,140 @@ async def run_workflow_sse(
                 logger.info("MCP tool connected to %s", mcp_server_url)
 
                 # ── state tracking ────────────────────────────────
-                executor_count = 0                     # raw MAF executor events seen
-                started_agents: set[str] = set()       # agents we emitted 'started' for
-                completed_agents: set[str] = set()     # agents we emitted 'completed' for
-                # Buffer: (agent_name, agent_idx, best_output_so_far)
-                pending: tuple[str, int, str] | None = None
+                started_agents: set[str] = set()
+                completed_agents: set[str] = set()
+                agent_buffers: dict[str, str] = {}   # agent → best cleaned output
+                current_agent: str | None = None
                 last_meaningful_output = ""
-                got_output_event = False
+                got_final_output = False
 
                 async for event in workflow.run(query, stream=True):
+                    etype = event.type
+                    eid = getattr(event, "executor_id", None) or ""
+
                     logger.debug(
-                        "MAF event: type=%s, data_type=%s",
-                        event.type,
-                        type(getattr(event, "data", None)),
+                        "MAF event: type=%s, executor_id=%s, data_type=%s",
+                        etype,
+                        eid,
+                        type(getattr(event, "data", None)).__name__,
                     )
 
-                    # ── executor_invoked ──────────────────────────
-                    if event.type == "executor_invoked":
-                        executor_count += 1
-                        idx = min(executor_count - 1, len(AGENT_SEQUENCE) - 1)
-                        name = AGENT_SEQUENCE[idx]
-
-                        # Transitioning to a different agent → flush pending
-                        if pending and pending[0] != name:
-                            p_name, p_idx, p_out = pending
-                            if p_name not in completed_agents:
-                                completed_agents.add(p_name)
-                                if p_out:
-                                    last_meaningful_output = p_out
-                                yield _sse_line("agent_completed", {
-                                    "agent": p_name,
-                                    "step": p_idx + 1,
-                                    "output": p_out,
-                                })
-                                logger.info(
-                                    "Agent completed: %s (step %d, output_len=%d)",
-                                    p_name, p_idx + 1, len(p_out),
-                                )
-                            pending = None
-
-                        # Emit agent_started only once per agent
-                        if name not in started_agents:
-                            started_agents.add(name)
-                            yield _sse_line("agent_started", {
-                                "agent": name,
-                                "step": idx + 1,
-                            })
-                            logger.info("Agent started: %s (step %d)", name, idx + 1)
-
-                        # Initialise buffer for this agent (keep existing if same agent)
-                        if pending is None or pending[0] != name:
-                            pending = (name, idx, "")
-
-                    # ── executor_completed ────────────────────────
-                    elif event.type == "executor_completed":
-                        idx = min(executor_count - 1, len(AGENT_SEQUENCE) - 1)
-                        name = AGENT_SEQUENCE[idx]
-
-                        raw = _extract_last_assistant_text(getattr(event, "data", None))
-                        output = _clean_output(raw)
-
-                        # Keep the longest (best) output for this agent
-                        if pending and pending[0] == name:
-                            if len(output) > len(pending[2]):
-                                pending = (name, idx, output)
-
-                        logger.debug(
-                            "Executor completed: %s (raw_len=%d, clean_len=%d, best=%d)",
-                            name, len(raw), len(output),
-                            len(pending[2]) if pending else 0,
-                        )
-
-                    # ── output (workflow finished) ────────────────
-                    elif event.type == "output":
-                        got_output_event = True
-
-                        # Flush last pending agent
-                        if pending and pending[0] not in completed_agents:
-                            p_name, p_idx, p_out = pending
-                            completed_agents.add(p_name)
-                            if p_out:
-                                last_meaningful_output = p_out
+                    # ── executor_invoked (agent) ──────────────────
+                    if etype == "executor_invoked" and eid in _AGENT_SET:
+                        # Transitioning to a different agent → flush previous
+                        if (
+                            current_agent
+                            and current_agent != eid
+                            and current_agent not in completed_agents
+                        ):
+                            completed_agents.add(current_agent)
+                            buf = agent_buffers.get(current_agent, "")
+                            if buf:
+                                last_meaningful_output = buf
+                            step = _agent_step(current_agent)
                             yield _sse_line("agent_completed", {
-                                "agent": p_name,
-                                "step": p_idx + 1,
-                                "output": p_out,
+                                "agent": current_agent,
+                                "step": step,
+                                "output": buf,
                             })
                             logger.info(
                                 "Agent completed: %s (step %d, output_len=%d)",
-                                p_name, p_idx + 1, len(p_out),
+                                current_agent, step, len(buf),
                             )
 
-                        final = _clean_output(
-                            _extract_last_assistant_text(getattr(event, "data", None))
-                        )
-                        if not final:
-                            final = last_meaningful_output
+                        current_agent = eid
 
+                        # Emit agent_started only once per agent
+                        if eid not in started_agents:
+                            started_agents.add(eid)
+                            agent_buffers.setdefault(eid, "")
+                            step = _agent_step(eid)
+                            yield _sse_line("agent_started", {
+                                "agent": eid,
+                                "step": step,
+                            })
+                            logger.info("Agent started: %s (step %d)", eid, step)
+
+                    # ── executor_completed (agent) ────────────────
+                    elif etype == "executor_completed" and eid in _AGENT_SET:
+                        raw = _extract_text(getattr(event, "data", None))
+                        output = _clean_output(raw)
+
+                        # Keep the longest (best) output for this agent
+                        if len(output) > len(agent_buffers.get(eid, "")):
+                            agent_buffers[eid] = output
+
+                        logger.debug(
+                            "Executor completed: %s (raw_len=%d, clean_len=%d, best=%d)",
+                            eid,
+                            len(raw),
+                            len(output),
+                            len(agent_buffers.get(eid, "")),
+                        )
+
+                    # ── workflow output (from "end" executor) ─────
+                    elif etype == "output":
+                        got_final_output = True
+
+                        # Extract final text from full conversation
+                        final_data = getattr(event, "data", None)
+                        final_text = _clean_output(_extract_last_assistant(final_data))
+                        if not final_text:
+                            final_text = _clean_output(_extract_text(final_data))
+
+                        # Flush all agents in pipeline order
+                        for name in AGENT_SEQUENCE:
+                            if name not in started_agents:
+                                continue
+                            if name not in completed_agents:
+                                completed_agents.add(name)
+                                buf = agent_buffers.get(name, "")
+
+                                # If this is the last agent and it has no
+                                # output, use the workflow final text instead
+                                if not buf and name == AGENT_SEQUENCE[-1]:
+                                    buf = final_text or last_meaningful_output
+
+                                if buf:
+                                    last_meaningful_output = buf
+
+                                step = _agent_step(name)
+                                yield _sse_line("agent_completed", {
+                                    "agent": name,
+                                    "step": step,
+                                    "output": buf,
+                                })
+                                logger.info(
+                                    "Agent completed: %s (step %d, output_len=%d)",
+                                    name, step, len(buf),
+                                )
+
+                        # Workflow-level final output
+                        wf_final = final_text or last_meaningful_output
                         yield _sse_line("workflow_completed", {
-                            "final_output": final,
+                            "final_output": wf_final,
                         })
-                        logger.info("Workflow completed (output_len=%d)", len(final))
+                        logger.info(
+                            "Workflow completed (output_len=%d)", len(wf_final),
+                        )
 
                 # Safety: if the loop ended without an 'output' event
-                if not got_output_event:
-                    logger.warning("No output event received — flushing remaining state")
-                    if pending and pending[0] not in completed_agents:
-                        p_name, p_idx, p_out = pending
-                        completed_agents.add(p_name)
-                        if p_out:
-                            last_meaningful_output = p_out
-                        yield _sse_line("agent_completed", {
-                            "agent": p_name,
-                            "step": p_idx + 1,
-                            "output": p_out,
-                        })
+                if not got_final_output:
+                    logger.warning(
+                        "No output event received — flushing remaining state"
+                    )
+                    for name in AGENT_SEQUENCE:
+                        if name in started_agents and name not in completed_agents:
+                            completed_agents.add(name)
+                            buf = agent_buffers.get(name, "")
+                            if buf:
+                                last_meaningful_output = buf
+                            step = _agent_step(name)
+                            yield _sse_line("agent_completed", {
+                                "agent": name,
+                                "step": step,
+                                "output": buf,
+                            })
                     yield _sse_line("workflow_completed", {
                         "final_output": last_meaningful_output,
                     })
