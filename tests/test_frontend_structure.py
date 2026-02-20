@@ -24,7 +24,7 @@ class TestFrontendProjectStructure:
         assert os.path.isfile(os.path.join(FRONTEND_DIR, "tsconfig.json"))
 
     def test_next_config_exists(self) -> None:
-        assert os.path.isfile(os.path.join(FRONTEND_DIR, "next.config.ts"))
+        assert os.path.isfile(os.path.join(FRONTEND_DIR, "next.config.mjs"))
 
     def test_tailwind_config_exists(self) -> None:
         assert os.path.isfile(os.path.join(FRONTEND_DIR, "tailwind.config.ts"))
@@ -137,7 +137,7 @@ class TestNextConfig:
 
     def test_standalone_output(self) -> None:
         """Next.js must be configured with standalone output for Docker."""
-        content = self._read_file("next.config.ts")
+        content = self._read_file("next.config.mjs")
         assert "standalone" in content
 
 

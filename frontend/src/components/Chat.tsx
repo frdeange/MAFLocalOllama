@@ -89,18 +89,20 @@ export default function Chat({ conversationId, onMessageSent }: Props) {
               : a
           )
         );
-        // Add agent message to the local list
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `temp-${event.agent}-${Date.now()}`,
-            role: "assistant",
-            author_name: event.agent,
-            content: event.output,
-            step_number: event.step,
-            created_at: new Date().toISOString(),
-          },
-        ]);
+        // Only add a message bubble if the agent produced meaningful output
+        if (event.output && event.output.trim().length > 1) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `temp-${event.agent}-${Date.now()}`,
+              role: "assistant",
+              author_name: event.agent,
+              content: event.output,
+              step_number: event.step,
+              created_at: new Date().toISOString(),
+            },
+          ]);
+        }
         break;
 
       case "workflow_completed":

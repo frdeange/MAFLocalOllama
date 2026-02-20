@@ -105,17 +105,19 @@ async def send_message(
 
                 if event_type == "agent_completed" and event_data:
                     data = json.loads(event_data)
-                    # Save agent response in a new session
-                    async with session_factory() as save_db:
-                        agent_message = Message(
-                            conversation_id=conversation_id,
-                            role="assistant",
-                            author_name=data.get("agent", "Agent"),
-                            content=data.get("output", ""),
-                            step_number=data.get("step", 0),
-                        )
-                        save_db.add(agent_message)
-                        await save_db.commit()
+                    output = data.get("output", "")
+                    # Only persist non-empty agent responses
+                    if output and output.strip():
+                        async with session_factory() as save_db:
+                            agent_message = Message(
+                                conversation_id=conversation_id,
+                                role="assistant",
+                                author_name=data.get("agent", "Agent"),
+                                content=output,
+                                step_number=data.get("step", 0),
+                            )
+                            save_db.add(agent_message)
+                            await save_db.commit()
 
                 elif event_type == "workflow_completed" and event_data:
                     # Update conversation timestamp

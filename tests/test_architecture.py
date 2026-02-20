@@ -75,7 +75,7 @@ class TestProjectStructure:
         assert os.path.isdir(fe_dir)
         assert os.path.isfile(os.path.join(fe_dir, "package.json"))
         assert os.path.isfile(os.path.join(fe_dir, "Dockerfile"))
-        assert os.path.isfile(os.path.join(fe_dir, "next.config.ts"))
+        assert os.path.isfile(os.path.join(fe_dir, "next.config.mjs"))
 
     def test_config_module_exists(self) -> None:
         assert os.path.isfile(os.path.join(BASE_DIR, "src", "config.py"))
