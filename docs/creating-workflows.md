@@ -39,7 +39,7 @@ def build_content_pipeline(client: object) -> object:
     """Build a content creation pipeline workflow.
 
     Args:
-        client: A FoundryLocalClient for creating agents.
+        client: An OllamaChatClient for creating agents.
 
     Returns:
         A Workflow instance ready for execution.

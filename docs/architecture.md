@@ -1,67 +1,100 @@
 # Architecture Overview
 
-## Travel Planner — Multi-Agent Orchestration
+## Travel Planner — Multi-Agent Orchestration with Web UI
 
 ### System Context
 
 This project implements a **multi-agent orchestration** proof-of-concept using the
 [Microsoft Agent Framework (MAF)](https://github.com/microsoft/agent-framework) with
-**FoundryLocal** as the local Small Language Model (SLM) runtime.
+**Ollama** as the local LLM runtime, served through a decoupled web architecture:
+**FastAPI** backend + **React/Next.js** frontend + **PostgreSQL** persistence.
 
 ### Architecture Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Host Machine (GPU)                        │
-│                                                             │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │              Python Process (main.py)                 │  │
-│  │                                                       │  │
-│  │  ┌─────────────┐  SequentialBuilder  ┌────────────┐   │  │
-│  │  │ Researcher  │ ──────────────────→ │ Weather    │   │  │
-│  │  │ (LLM only)  │                    │ Analyst    │   │  │
-│  │  └─────────────┘                    │ (MCP tools)│   │  │
-│  │                                     └─────┬──────┘   │  │
-│  │                                           │          │  │
-│  │                                     ┌─────▼──────┐   │  │
-│  │                                     │ Planner    │   │  │
-│  │                                     │ (LLM only) │   │  │
-│  │                                     └────────────┘   │  │
-│  │                                                       │  │
-│  │  FoundryLocalClient ←→ FoundryLocal Runtime (GPU)     │  │
-│  │  OpenTelemetry SDK  ──→ OTLP Exporter                │  │
-│  └───────────────────────────────────────────────────────┘  │
-│                           │                     │           │
-│                     HTTP  │               gRPC  │           │
-│                           ▼                     ▼           │
-│  ┌──────────────────────────┐  ┌─────────────────────────┐  │
-│  │   Docker: MCP Server     │  │   Docker: Aspire        │  │
-│  │   FastMCP (port 8090)    │  │   UI (port 18888)       │  │
-│  │   + OTel auto-instrument │──│→ OTLP gRPC (port 18889) │  │
-│  │   Streamable HTTP        │  │   OTLP gRPC (port 4317) │  │
-│  └──────────────────────────┘  └─────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
-
-> Both the Python process (host → port 4317) and the MCP server container
-> (Docker network → aspire-dashboard:18889) export telemetry to the same
-> Aspire Dashboard instance, enabling **distributed tracing** across the
-> entire system.
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          Docker Compose Stack                           │
+│                                                                         │
+│  ┌──────────────┐      ┌───────────────────────────────────────────┐    │
+│  │  Next.js      │ HTTP │  FastAPI (api)                            │    │
+│  │  Frontend     │─────→│  :8000                                    │    │
+│  │  :3000        │  SSE │                                           │    │
+│  └──────────────┘      │  ┌─────────┐  Sequential  ┌────────────┐  │    │
+│                        │  │Researcher│────────────→│ Weather    │  │    │
+│                        │  │(LLM only)│            │ Analyst    │  │    │
+│                        │  └─────────┘            │ (MCP tools)│  │    │
+│                        │                         └─────┬──────┘  │    │
+│                        │                               │         │    │
+│                        │                         ┌─────▼──────┐  │    │
+│                        │                         │ Planner    │  │    │
+│                        │                         │ (LLM only) │  │    │
+│                        │                         └────────────┘  │    │
+│                        │                                          │    │
+│                        │  OllamaChatClient ←→ Ollama (:11434)    │    │
+│                        │  SQLAlchemy async ←→ PostgreSQL (:5432)  │    │
+│                        │  OpenTelemetry SDK ──→ OTLP Exporter    │    │
+│                        └───────────────────────────────────────────┘    │
+│                                │ HTTP              │ gRPC               │
+│                                ▼                   ▼                    │
+│  ┌──────────────────────────┐  ┌───────────────────────────────────┐    │
+│  │   MCP Server (Docker)    │  │   Aspire Dashboard (Docker)      │    │
+│  │   FastMCP (port 8090)    │  │   UI (port 18888)                │    │
+│  │   + OTel auto-instrument │──│→ OTLP gRPC (port 18889)          │    │
+│  │   Streamable HTTP        │  │   OTLP gRPC (ext. port 4317)    │    │
+│  └──────────────────────────┘  └───────────────────────────────────┘    │
+│                                                                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────────┐  │
+│  │  Ollama       │  │  PostgreSQL  │  │  Ollama Init (one-shot)     │  │
+│  │  :11434       │  │  :5432       │  │  Pulls model on first run   │  │
+│  │  GPU or CPU   │  │  + volumes   │  │  depends_on: ollama         │  │
+│  └──────────────┘  └──────────────┘  └──────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Orchestration | In-process (SequentialBuilder) | MAF's native pattern; all agents share the same process and conversation context |
-| LLM Runtime | FoundryLocal | Local GPU inference, no API keys, model configured via `.env` |
+| Architecture | Decoupled frontend + API + DB | Independent scaling, modern web UX, persistent conversations |
+| Orchestration | In-process (SequentialBuilder) | MAF's native pattern; agents share the same process and conversation context |
+| LLM Runtime | Ollama (Docker) | Local inference, GPU + CPU support, no API keys, model via `ollama pull` |
+| Backend | FastAPI + SSE | Async-native, streaming support, auto-docs, Pydantic validation |
+| Frontend | React / Next.js 14 | TypeScript, App Router, standalone Docker output, Tailwind CSS |
+| Database | PostgreSQL + SQLAlchemy async | Reliable persistence, async support, conversation history |
 | Agent-to-Agent | Shared conversation (list[Message]) | SequentialBuilder passes messages down the chain automatically |
-| External Tools | FastMCP (Streamable HTTP) | Single MCP server in Docker container, no auth, port 8090 |
-| Observability | OpenTelemetry → Aspire Dashboard | Aspire Dashboard (Docker) for traces, metrics, and structured logs |
-| Configuration | `.env` + python-dotenv | Environment-based, 12-factor compatible |
+| External Tools | FastMCP (Streamable HTTP) | Single MCP server in Docker, no auth, port 8090 |
+| Observability | OpenTelemetry → Aspire Dashboard | Distributed tracing across API, MCP server, and dashboard |
+| Configuration | `.env` + env vars | 12-factor compatible, Docker Compose env_file |
+| Profiles | GPU/CPU Docker Compose profiles | Same compose file supports both GPU and CPU-only setups |
 
 ### Components
 
-#### 1. Agents (In-Process)
+#### 1. Frontend (Next.js)
+
+- **Technology**: React 18, Next.js 14, TypeScript, Tailwind CSS
+- **Transport**: HTTP REST + SSE (ReadableStream API)
+- **Features**:
+  - Conversation sidebar with create/delete
+  - Real-time agent pipeline visualization (3-step indicator)
+  - Markdown rendering for agent responses
+  - Agent name badges with per-agent colors
+  - Mobile-responsive layout
+- **Docker**: Multi-stage build (deps → build → standalone runner)
+
+#### 2. API Server (FastAPI)
+
+- **Technology**: FastAPI, Uvicorn, SQLAlchemy 2.0 async, asyncpg
+- **Endpoints**: REST CRUD + SSE streaming on `/api/conversations/{id}/messages`
+- **Lifespan**: Initializes OllamaChatClient, database, and telemetry on startup
+- **Features**:
+  - Conversation CRUD with cascade delete
+  - Multi-turn context windowing (~4096 token budget)
+  - SSE event protocol: `workflow_started` → `agent_started` → `agent_completed` → `workflow_completed`
+  - CORS configuration for frontend origin
+  - Health check endpoint
+- **Docker**: OTel auto-instrumented via `opentelemetry-instrument uvicorn`
+
+#### 3. Agents (In-Process within API)
 
 | Agent | Role | Tools |
 |-------|------|-------|
@@ -69,108 +102,137 @@ This project implements a **multi-agent orchestration** proof-of-concept using t
 | **WeatherAnalyst** | Fetches and analyzes weather, time, dining options | `get_weather`, `get_current_time`, `search_restaurants` via MCP |
 | **Planner** | Synthesizes research + weather into a travel itinerary | None (LLM synthesis) |
 
-All agents are created via `FoundryLocalClient.as_agent()` and wired into a
-`SequentialBuilder(participants=[researcher, weather_analyst, planner]).build()` workflow.
+All agents are created via `OllamaChatClient.as_agent()` and wired into a
+`SequentialBuilder(participants=[...]).build()` workflow.
 
-#### 2. MCP Server (Docker Container)
+#### 4. MCP Server (Docker Container)
 
 - **Technology**: FastMCP 3.0, Python 3.13
 - **Transport**: Streamable HTTP on port 8090 (`/mcp` endpoint)
 - **Tools**: `get_weather`, `get_current_time`, `search_restaurants`
-- **Telemetry**: Auto-instrumented via `opentelemetry-instrument` (service: `travel-mcp-tools`)
-- **No authentication** (PoC scope)
+- **Telemetry**: Auto-instrumented via `opentelemetry-instrument`
+- **Data**: Mock data (hardcoded dictionaries — PoC scope)
 
-The Weather Analyst agent connects to the MCP server using MAF's `MCPStreamableHTTPTool`.
-FastMCP's native OpenTelemetry instrumentation automatically creates spans for each
-`tools/call` operation, following [MCP semantic conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/mcp/).
-The MCP server exports telemetry to Aspire Dashboard via the Docker internal network
-(`aspire-dashboard:18889`).
+#### 5. Ollama (Docker Container)
 
-#### 3. Observability (Docker Container)
+- **Profiles**: `gpu` (with NVIDIA runtime) or `cpu` (without)
+- **Shared container**: Both profiles use `container_name: travel-ollama`
+- **Init**: One-shot container `ollama-init` runs `ollama pull ${model}` on first start
+- **Volume**: `ollama-models` persists downloaded models across restarts
 
-- **Aspire Dashboard**: Collects and visualizes traces, metrics, and structured logs
-- **OTLP gRPC**: Host port 4317 → container port 18889
-- **OTLP HTTP**: Host port 4318 → container port 18890
-- **UI**: Port 18888
-- **Services reporting**: `travel-planner-orchestration` (Python process) + `travel-mcp-tools` (MCP server)
+#### 6. PostgreSQL (Docker Container)
 
-The Agent Framework's `configure_otel_providers()` automatically instruments all agent
-calls, model invocations, and tool executions. Custom business spans wrap the workflow
-and individual agent steps.
+- **Image**: `postgres:16-alpine`
+- **Tables**: `conversations` + `messages` (auto-created via SQLAlchemy `create_all`)
+- **Volume**: `postgres-data` for persistence
+- **Healthcheck**: `pg_isready` every 5s
 
-The MCP server is independently instrumented using `opentelemetry-instrument` (auto-
-instrumentation CLI), which detects Starlette/uvicorn and creates server-side spans
-for every tool call. This enables **distributed tracing**: the orchestrator's HTTP
-client propagates W3C `traceparent` headers, and the MCP server's instrumented HTTP
-stack extracts them, linking MCP tool spans as children of the agent spans.
+#### 7. Observability (Aspire Dashboard)
 
-> **Important**: See [Telemetry Guide](telemetry-guide.md) for setup requirements and
-> common pitfalls when working with OpenTelemetry in this project.
+- **Collects**: Traces, metrics, and structured logs via OTLP gRPC
+- **Services reporting**: `travel-planner-api` (FastAPI) + `travel-mcp-tools` (MCP server)
+- **Ports**: 18888 (UI), 18889 (OTLP gRPC internal), 4317 (OTLP gRPC external)
 
 ### Data Flow
 
 ```
-User Query
+User types message in browser
     │
     ▼
+Frontend sends POST /api/conversations/{id}/messages
+    │ (SSE stream response)
+    ▼
 ┌──────────────────────────────────────────────────────┐
+│  API builds context from conversation history        │
+│  API calls run_workflow_sse(client, mcp_url, query)  │
+│                                                      │
 │  SequentialBuilder Workflow                           │
 │                                                      │
-│  1. Researcher receives user query                   │
-│     → Produces: Research Brief (attractions, tips)    │
+│  1. Researcher receives user query + context          │
+│     → SSE: agent_started, agent_completed            │
+│     → Produces: Research Brief                        │
 │                                                      │
 │  2. WeatherAnalyst receives conversation so far      │
 │     → Calls MCP tools: get_weather, get_current_time │
+│     → SSE: agent_started, agent_completed            │
 │     → Produces: Weather Analysis                     │
 │                                                      │
 │  3. Planner receives full conversation               │
+│     → SSE: agent_started, agent_completed            │
 │     → Produces: Complete Travel Itinerary            │
 │                                                      │
-│  Output: list[Message] with all agent responses       │
+│  SSE: workflow_completed                             │
+│  Messages persisted to PostgreSQL                     │
 └──────────────────────────────────────────────────────┘
     │
     ▼
-Final Travel Plan displayed to user
+Frontend renders pipeline progress + agent responses
 ```
 
 ### Project Structure
 
 ```
 localOrchestration/
-├── main.py                      # Entry point
-├── docker-compose.yml           # MCP server + Aspire Dashboard
-├── requirements.txt             # Python dependencies
-├── .env                         # Environment configuration
-├── .env.example                 # Template for .env
+├── docker-compose.yml               # 7 services, GPU/CPU profiles
+├── .env.example                     # Environment template
+├── requirements.txt                 # Host Python dependencies
+├── scripts/
+│   └── init-ollama.sh               # Model pull on first run
+├── api/
+│   ├── main.py                      # FastAPI app + lifespan
+│   ├── Dockerfile                   # OTel auto-instrumented
+│   ├── requirements.txt             # API dependencies
+│   ├── models/
+│   │   ├── database.py              # Async engine + session factory
+│   │   ├── orm.py                   # Conversation + Message ORM
+│   │   └── schemas.py              # Pydantic schemas + SSE events
+│   ├── routes/
+│   │   ├── health.py                # GET /api/health
+│   │   ├── conversations.py         # CRUD endpoints
+│   │   └── messages.py              # SSE streaming endpoint
+│   └── services/
+│       ├── workflow.py              # MAF → SSE event bridge
+│       └── session.py              # Context window builder
+├── frontend/
+│   ├── Dockerfile                   # Multi-stage standalone
+│   ├── package.json                 # React, Next.js, Tailwind
+│   ├── next.config.ts               # standalone output
+│   └── src/
+│       ├── app/                     # Pages + layout
+│       ├── components/              # Chat, ConversationList, etc.
+│       ├── hooks/                   # useSSE custom hook
+│       └── lib/                     # API client + TypeScript types
 ├── src/
-│   ├── __init__.py
-│   ├── config.py                # Settings from env vars
-│   ├── telemetry.py             # OTel setup + custom spans
+│   ├── config.py                    # Settings from env vars
+│   ├── telemetry.py                 # OTel setup + custom spans
 │   ├── agents/
-│   │   ├── __init__.py
-│   │   ├── researcher.py        # Research agent factory
-│   │   ├── weather_analyst.py   # Weather agent + MCP tool
-│   │   └── planner.py           # Planner agent factory
+│   │   ├── researcher.py            # Research agent factory
+│   │   ├── weather_analyst.py       # Weather agent + MCP tool
+│   │   └── planner.py              # Planner agent factory
 │   └── workflows/
-│       ├── __init__.py
-│       └── travel_planner.py    # SequentialBuilder workflow
+│       └── travel_planner.py        # SequentialBuilder workflow
 ├── mcp_server/
-│   ├── server.py                # FastMCP tool server
-│   ├── Dockerfile               # Container image
-│   └── requirements.txt         # Server dependencies
+│   ├── server.py                    # FastMCP tool server
+│   ├── Dockerfile                   # OTel auto-instrumented
+│   └── requirements.txt             # Server dependencies
 ├── tests/
-│   ├── test_architecture.py     # Compliance tests
-│   ├── test_config.py           # Config module tests
-│   ├── test_mcp_tools.py        # MCP tool unit tests
-│   ├── test_telemetry.py        # Telemetry tests
-│   └── test_workflow_patterns.py# Workflow pattern tests
+│   ├── test_architecture.py         # Project structure (190 tests total)
+│   ├── test_config.py               # Config module tests
+│   ├── test_mcp_tools.py            # MCP tool unit tests
+│   ├── test_telemetry.py            # Telemetry tests
+│   ├── test_telemetry_patterns.py   # OTel config validation
+│   ├── test_workflow_patterns.py    # Workflow pattern tests
+│   ├── test_api_structure.py        # API structure validation
+│   └── test_frontend_structure.py   # Frontend structure validation
 ├── docs/
-│   ├── architecture.md          # This document
-│   ├── adding-agents.md         # How to add new agents
-│   ├── creating-workflows.md    # How to create workflows
-│   └── agent-design-guide.md    # Agent prompt design
-└── prototypes/                  # Original exploration scripts
-    ├── main.py
-    ├── main_openai.py
-    └── mstest.py
+│   ├── architecture.md              # This document
+│   ├── telemetry-guide.md           # OTel + Aspire setup guide
+│   ├── adding-agents.md             # How to add new agents
+│   ├── creating-workflows.md        # How to create workflows
+│   └── agent-design-guide.md        # Agent prompt design
+└── prototypes/                      # Early experiments
+    ├── main.py                      # MCPStdioTool prototype
+    ├── main_openai.py               # Direct OpenAI client prototype
+    ├── main_foundry.py              # Original FoundryLocal main
+    └── mstest.py                    # Basic test script
 ```

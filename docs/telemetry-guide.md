@@ -18,25 +18,27 @@ timing, plus MCP tool-call counters.
 ## Architecture
 
 ```
-Python Process (host)                   Docker Network
+Docker Network
 ┌──────────────────────┐     gRPC     ┌──────────────────────┐
-│  MAF + OTel SDK      │ ──────────→  │  Aspire Dashboard    │
-│                      │   :4317      │  :18888 (UI)         │
-│  TracerProvider      │              │  :18889 (OTLP gRPC)  │
-│  MeterProvider       │              │  :18890 (OTLP HTTP)  │
-│  LoggerProvider      │              └──────────────────────┘
-└──────────────────────┘                        ▲
+│  FastAPI API          │ ──────────→  │  Aspire Dashboard    │
+│  (travel-planner-api)│   internal   │  :18888 (UI)         │
+│  + OTel auto-instr.  │              │  :18889 (OTLP gRPC)  │
+│  :8000               │              │  :18890 (OTLP HTTP)  │
+└──────────────────────┘              └──────────────────────┘
+                                                ▲
                                                 │ gRPC
 MCP Server Container                            │ (Docker internal)
 ┌──────────────────────┐     gRPC               │
 │  FastMCP 3.0         │ ──────────→ aspire-dashboard:18889
 │  + OTel auto-instr.  │
 │  (travel-mcp-tools)  │
+│  :8090               │
 └──────────────────────┘
 ```
 
-- **Host → Aspire**: Port 4317 mapped to container port 18889
-- **MCP → Aspire**: Docker internal network, container-to-container (`aspire-dashboard:18889`)
+- **API → Aspire**: Docker internal network (`aspire-dashboard:18889`)
+- **MCP → Aspire**: Docker internal network (`aspire-dashboard:18889`)
+- **External access**: Port 4317 mapped to container port 18889
 - Both services appear independently in the Aspire Dashboard UI
 
 ## Setup Checklist
@@ -54,24 +56,17 @@ pip install opentelemetry-exporter-otlp-proto-grpc
 This package is listed in `requirements.txt`, so `pip install -r requirements.txt`
 will install it. But if you manually install packages, don't skip this one.
 
-### 2. Call `load_dotenv()` Before MAF Imports
+### 2. Environment Variables Are Set Before Startup
 
-`configure_otel_providers()` reads standard OpenTelemetry environment variables
-(`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, etc.) at **import time**.
-If `load_dotenv()` hasn't been called yet, those variables won't be set and the
-exporter won't know where to send data.
+The API server runs inside Docker, where environment variables are set via
+`docker-compose.yml` (`environment:` section). The `opentelemetry-instrument`
+CLI wrapper reads these at startup, so they are always available.
 
-```python
-# ✅ Correct — load .env FIRST
-from dotenv import load_dotenv
-load_dotenv()
+For local development outside Docker, create a `.env` file and export vars:
 
-from agent_framework.observability import configure_otel_providers
-
-# ❌ Wrong — .env not loaded when MAF reads env vars
-from agent_framework.observability import configure_otel_providers
-from dotenv import load_dotenv
-load_dotenv()  # Too late!
+```bash
+cp .env.example .env
+# source or use python-dotenv to load
 ```
 
 ### 3. Call `shutdown_telemetry()` Before Process Exit
@@ -108,12 +103,13 @@ Then open [http://localhost:18888](http://localhost:18888) to view:
 
 ## Environment Variables
 
+### API Server (Docker container)
+
 | Variable | Value | Purpose |
-|----------|-------|---------|
-| `ENABLE_OTEL` | `true` | Enables OpenTelemetry in this project |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4317` | OTLP endpoint (all signals) |
+|----------|-------|--------|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://aspire-dashboard:18889` | Aspire via Docker internal network |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | `grpc` | Transport protocol |
-| `OTEL_SERVICE_NAME` | `travel-planner-orchestration` | Service name in telemetry data |
+| `OTEL_SERVICE_NAME` | `travel-planner-api` | Service name in telemetry data |
 
 The MCP server container uses its own set of OTEL variables (configured in `docker-compose.yml`):
 

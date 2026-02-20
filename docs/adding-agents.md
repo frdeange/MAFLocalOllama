@@ -26,7 +26,7 @@ def create_budget_analyst_agent(client: object) -> Agent:
     """Create the Budget Analyst agent.
 
     Args:
-        client: A FoundryLocalClient (or any client implementing as_agent).
+        client: An OllamaChatClient (or any client implementing as_agent).
 
     Returns:
         A configured Agent instance.
@@ -111,6 +111,37 @@ Create `tests/test_my_agent.py` to validate:
 
 See `tests/test_architecture.py` for reference patterns.
 
+### 6. Update the API Workflow Service
+
+Add the new agent name to `AGENT_SEQUENCE` in `api/services/workflow.py`:
+
+```python
+AGENT_SEQUENCE = ["Researcher", "WeatherAnalyst", "BudgetAnalyst", "Planner"]
+```
+
+### 7. Update the Frontend Pipeline
+
+Add the agent to `AGENT_PIPELINE` in `frontend/src/lib/types.ts`:
+
+```typescript
+export const AGENT_PIPELINE: AgentState[] = [
+  { name: "Researcher", label: "Research", status: "pending" },
+  { name: "WeatherAnalyst", label: "Weather", status: "pending" },
+  { name: "BudgetAnalyst", label: "Budget", status: "pending" },
+  { name: "Planner", label: "Plan", status: "pending" },
+];
+```
+
+Also add a color for the new agent in `frontend/src/components/MessageBubble.tsx`.
+
+### 8. Rebuild
+
+```bash
+docker compose build --no-cache api
+docker compose build --no-cache frontend
+docker compose --profile gpu up -d
+```
+
 ## Conventions
 
 | Convention | Rule |
@@ -121,3 +152,5 @@ See `tests/test_architecture.py` for reference patterns.
 | Instructions | Clear, structured prompt with numbered items |
 | Tools | Only via MCP (no local function tools in agents) |
 | Return type | `Agent` (no tools) or `tuple[Agent, MCPStreamableHTTPTool]` (with tools) |
+| API sequence | Update `AGENT_SEQUENCE` in `api/services/workflow.py` |
+| Frontend pipeline | Update `AGENT_PIPELINE` in `frontend/src/lib/types.ts` |

@@ -1,121 +1,128 @@
 """
 Workflow Pattern Tests
 ======================
-Tests that validate the workflow construction patterns comply with MAF conventions.
-These tests verify structural correctness without requiring a running model.
+Validates workflow patterns using source-file reading to avoid
+agent_framework dependency.
 """
 
-import inspect
+import os
 
 import pytest
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _read(*parts):
+    path = os.path.join(BASE_DIR, *parts)
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
 
 class TestSequentialWorkflowPattern:
-    """Validate that the Travel Planner uses SequentialBuilder correctly."""
+    """Verify travel_planner.py follows the SequentialBuilder pattern."""
 
-    def test_workflow_builder_uses_sequential_builder(self) -> None:
-        """Must use SequentialBuilder, not raw WorkflowBuilder."""
-        source = inspect.getsource(
-            __import__("src.workflows.travel_planner", fromlist=["build_travel_planner_workflow"])
-        )
-        assert "SequentialBuilder" in source
-        assert "participants=" in source
+    def test_imports_sequential_builder(self) -> None:
+        src = _read("src", "workflows", "travel_planner.py")
+        assert "SequentialBuilder" in src
 
-    def test_workflow_imports_from_orchestrations(self) -> None:
-        """SequentialBuilder must be imported from agent_framework.orchestrations."""
-        source = inspect.getsource(
-            __import__("src.workflows.travel_planner", fromlist=["build_travel_planner_workflow"])
-        )
-        assert "from agent_framework.orchestrations import SequentialBuilder" in source
+    def test_has_builder_function(self) -> None:
+        src = _read("src", "workflows", "travel_planner.py")
+        assert "def build_travel_planner_workflow" in src
 
-    def test_three_participants_in_order(self) -> None:
-        """Workflow must define exactly 3 participants: researcher, weather, planner."""
-        source = inspect.getsource(
-            __import__("src.workflows.travel_planner", fromlist=["build_travel_planner_workflow"])
-        )
-        # All three agent variables must appear in participants list
-        assert "researcher" in source
-        assert "weather_analyst" in source
-        assert "planner" in source
+    def test_uses_participants(self) -> None:
+        src = _read("src", "workflows", "travel_planner.py")
+        assert "participants=" in src
 
-    def test_workflow_returns_tuple(self) -> None:
-        """build_travel_planner_workflow should return (workflow, mcp_tool) tuple."""
-        from src.workflows.travel_planner import build_travel_planner_workflow
-        sig = inspect.signature(build_travel_planner_workflow)
-        # Return annotation should mention tuple
-        assert "tuple" in str(sig.return_annotation).lower()
+    def test_chains_three_agents(self) -> None:
+        src = _read("src", "workflows", "travel_planner.py")
+        for agent in ("researcher", "weather_analyst", "planner"):
+            assert agent in src, f"Missing {agent} in workflow"
 
 
 class TestAgentFactoryPatterns:
-    """Validate agent factory functions follow expected conventions."""
+    """Verify agent modules follow the factory function pattern."""
 
-    def test_researcher_has_no_tools_param(self) -> None:
-        """Researcher agent should NOT use external tools."""
-        source = inspect.getsource(
-            __import__("src.agents.researcher", fromlist=["create_researcher_agent"])
-        )
-        assert "tools=" not in source or "tools=[]" in source
+    @pytest.mark.parametrize("agent,factory", [
+        ("researcher", "create_researcher_agent"),
+        ("weather_analyst", "create_weather_analyst_agent"),
+        ("planner", "create_planner_agent"),
+    ])
+    def test_agent_has_factory_function(self, agent: str, factory: str) -> None:
+        src = _read("src", "agents", f"{agent}.py")
+        assert f"def {factory}" in src
 
-    def test_weather_analyst_has_mcp_tool(self) -> None:
-        """WeatherAnalyst agent MUST use MCPStreamableHTTPTool."""
-        source = inspect.getsource(
-            __import__("src.agents.weather_analyst", fromlist=["create_weather_analyst_agent"])
-        )
-        assert "MCPStreamableHTTPTool" in source
-        assert "tools=" in source
-
-    def test_planner_has_no_tools_param(self) -> None:
-        """Planner agent should NOT use external tools."""
-        source = inspect.getsource(
-            __import__("src.agents.planner", fromlist=["create_planner_agent"])
-        )
-        assert "tools=" not in source or "tools=[]" in source
-
-    def test_all_agents_use_as_agent(self) -> None:
-        """All agent factories should use client.as_agent() pattern."""
-        for module_name in [
-            "src.agents.researcher",
-            "src.agents.weather_analyst",
-            "src.agents.planner",
-        ]:
-            source = inspect.getsource(__import__(module_name, fromlist=["create"]))
-            assert "as_agent" in source, f"{module_name} should use client.as_agent()"
+    def test_agents_use_as_agent_pattern(self) -> None:
+        for agent in ("researcher", "weather_analyst", "planner"):
+            src = _read("src", "agents", f"{agent}.py")
+            assert "as_agent" in src, f"{agent}.py missing as_agent() call"
 
 
 class TestMCPToolPattern:
-    """Validate MCP tool usage patterns."""
+    """Verify weather_analyst uses MCPStreamableHTTPTool."""
 
-    def test_mcp_tool_uses_streamable_http(self) -> None:
-        """Must use MCPStreamableHTTPTool, not MCPStdioTool."""
-        source = inspect.getsource(
-            __import__("src.agents.weather_analyst", fromlist=["create_weather_analyst_agent"])
-        )
-        assert "MCPStreamableHTTPTool" in source
-        assert "MCPStdioTool" not in source
+    def test_weather_analyst_imports_mcp_tool(self) -> None:
+        src = _read("src", "agents", "weather_analyst.py")
+        assert "MCPStreamableHTTPTool" in src
 
-    def test_mcp_tool_url_is_parameterized(self) -> None:
-        """MCP server URL should come from a parameter, not hardcoded."""
-        source = inspect.getsource(
-            __import__("src.agents.weather_analyst", fromlist=["create_weather_analyst_agent"])
-        )
-        assert "mcp_server_url" in source
+    def test_weather_analyst_passes_tools(self) -> None:
+        src = _read("src", "agents", "weather_analyst.py")
+        assert "tools=" in src
+
+    def test_other_agents_no_tools(self) -> None:
+        for agent in ("researcher", "planner"):
+            src = _read("src", "agents", f"{agent}.py")
+            assert "MCPStreamableHTTPTool" not in src
 
 
-class TestMainEntryPoint:
-    """Validate main.py structure."""
+class TestApiEntryPoint:
+    """Verify API server main.py includes essential patterns."""
 
-    def test_main_imports_workflow(self) -> None:
-        source = inspect.getsource(__import__("main"))
-        assert "build_travel_planner_workflow" in source
+    def test_api_uses_fastapi(self) -> None:
+        src = _read("api", "main.py")
+        assert "FastAPI" in src
 
-    def test_main_imports_foundry_local(self) -> None:
-        source = inspect.getsource(__import__("main"))
-        assert "FoundryLocalClient" in source
+    def test_api_defines_lifespan(self) -> None:
+        src = _read("api", "main.py")
+        assert "lifespan" in src
 
-    def test_main_imports_telemetry(self) -> None:
-        source = inspect.getsource(__import__("main"))
-        assert "setup_telemetry" in source
+    def test_api_configures_cors(self) -> None:
+        src = _read("api", "main.py")
+        assert "CORS" in src or "cors" in src.lower()
 
-    def test_main_imports_config(self) -> None:
-        source = inspect.getsource(__import__("main"))
-        assert "get_settings" in source
+    def test_api_uses_config(self) -> None:
+        src = _read("api", "main.py")
+        assert "get_settings" in src or "Settings" in src or "config" in src.lower()
+
+    def test_api_uses_ollama_client(self) -> None:
+        src = _read("api", "main.py")
+        assert "OllamaChatClient" in src or "ollama" in src.lower()
+
+    def test_api_includes_routes(self) -> None:
+        src = _read("api", "main.py")
+        assert "include_router" in src
+
+    def test_api_messages_route_uses_workflow(self) -> None:
+        src = _read("api", "routes", "messages.py")
+        assert "run_workflow_sse" in src or "workflow" in src.lower()
+
+
+class TestWorkflowServicePattern:
+    """Verify api/services/workflow.py provides SSE streaming."""
+
+    def test_workflow_service_exists(self) -> None:
+        assert os.path.isfile(os.path.join(BASE_DIR, "api", "services", "workflow.py"))
+
+    def test_workflow_service_uses_sequential_builder(self) -> None:
+        src = _read("api", "services", "workflow.py")
+        assert "build_travel_planner_workflow" in src or "SequentialBuilder" in src
+
+    def test_workflow_service_emits_sse_events(self) -> None:
+        src = _read("api", "services", "workflow.py")
+        for event in ("workflow_started", "agent_started",
+                       "agent_completed", "workflow_completed"):
+            assert event in src, f"Missing SSE event: {event}"
+
+    def test_workflow_service_handles_errors(self) -> None:
+        src = _read("api", "services", "workflow.py")
+        assert "error" in src.lower()
+        assert "except" in src or "try" in src

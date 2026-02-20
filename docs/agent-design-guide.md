@@ -10,8 +10,8 @@ Small Language Models (SLMs) which have more limited capacity than cloud LLMs.
 
 ### Keep Instructions Concise
 
-Local models (Phi-4-mini, Qwen 2.5) have shorter context windows and less
-reasoning capacity than GPT-4. Write clear, structured prompts:
+Local models via Ollama (phi4-mini, qwen2.5, llama3.2) have shorter context
+windows and less reasoning capacity than GPT-4. Write clear, structured prompts:
 
 **Good:**
 ```
