@@ -62,7 +62,8 @@ export function useSSE({ onEvent, onError, onComplete }: UseSSEOptions) {
 
             if (eventType && eventData) {
               try {
-                const parsed: SSEEvent = JSON.parse(eventData);
+                const data = JSON.parse(eventData);
+                const parsed: SSEEvent = { ...data, type: eventType } as SSEEvent;
                 onEvent(parsed);
               } catch {
                 console.warn("Failed to parse SSE data:", eventData);
