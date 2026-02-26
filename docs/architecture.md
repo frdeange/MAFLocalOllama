@@ -9,7 +9,30 @@ This project implements a **multi-agent orchestration** proof-of-concept using t
 **Ollama** as the local LLM runtime, served through a decoupled web architecture:
 **FastAPI** backend + **React/Next.js** frontend + **PostgreSQL** persistence.
 
-### Architecture Diagram
+### Architecture Diagrams
+
+> **Generated diagrams** — These are auto-generated from Python scripts.
+> Regenerate after architecture changes:
+>
+> ```bash
+> # Using the 'diagrams' library (requires graphviz):
+> pip install diagrams && apt-get install graphviz
+> python docs/generate_architecture.py
+>
+> # Using PIL (no graphviz needed):
+> pip install Pillow
+> python docs/generate_architecture_png.py
+> ```
+
+#### Platform Architecture (diagrams library)
+
+![Travel Planner Architecture](images/travel_planner_architecture.png)
+
+#### Platform Architecture (PIL version)
+
+![Travel Planner Architecture — PIL](images/travel_planner_architecture_pil.png)
+
+#### ASCII Reference (Docker Compose — original)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐

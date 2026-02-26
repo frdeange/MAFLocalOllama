@@ -1,4 +1,5 @@
 # ── Microsoft Agent Framework (MAF) ──────────────────────────
+agent-framework-core[all] @ git+https://github.com/microsoft/agent-framework.git@main#subdirectory=python/packages/core
 agent-framework @ git+https://github.com/microsoft/agent-framework.git@main#subdirectory=python
 agent-framework-ollama @ git+https://github.com/microsoft/agent-framework.git@main#subdirectory=python/packages/ollama
 agent-framework-orchestrations @ git+https://github.com/microsoft/agent-framework.git@main#subdirectory=python/packages/orchestrations
