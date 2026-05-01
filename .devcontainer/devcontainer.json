@@ -11,7 +11,7 @@
 		"ghcr.io/devcontainers/features/docker-in-docker:2": {
 			"dockerDashComposeVersion": "v2"
 		},
-		"ghcr.io/devcontainers/features/node:1": {}
+		"ghcr.io/devcontainers/features/node:2": {}
 	},
 
 	// Ports: Frontend (3000), API (8000), MCP (8090), Ollama (11434),
